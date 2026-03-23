@@ -57,6 +57,34 @@ http://localhost:8765/index.html
 
 ## 使い方
 
+### 0. ファイルの配置場所
+
+`server.py` と `index.html` は **必ず同じフォルダ** に置いてください。`server.py` は起動時に自分自身と同じディレクトリの `index.html` を参照するため、別々のフォルダには置けません。
+
+**オススメの配置例:**
+
+```
+~/Documents/daytrade_simu/
+├── index.html
+├── server.py
+└── README.md
+```
+
+```bash
+cd ~/Documents/daytrade_simu
+python3 server.py
+```
+
+**置いてはいけない場所:**
+
+| 場所 | 理由 |
+|------|------|
+| `server.py` と `index.html` を別フォルダに分ける | `index.html` が見つからずエラーになる |
+| OneDrive / Dropbox の同期フォルダ | ファイル競合が起きやすい |
+| パスにスペースや日本語を含むフォルダ（一部環境） | ターミナルでのパス指定が面倒になることがある |
+
+---
+
 ### 1. データを読み込む
 
 1. **日付指定**（省略可）: 日付ピッカーで過去の取引日を指定。空欄にすると最新の取引日データを取得します。
