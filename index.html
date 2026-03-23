@@ -125,7 +125,7 @@ canvas{display:block;width:100%;height:280px}
 
 <div class="charts-wrap">
   <div class="chart-panel">
-    <div class="chart-label" id="nikkeiLabel">日経平均株価参考チャート (1321.T × 10)</div>
+    <div class="chart-label" id="nikkeiLabel">日経平均株価参考チャート (1321.T)</div>
     <canvas id="nikkeiChart"></canvas>
   </div>
   <div class="chart-panel">
@@ -662,9 +662,9 @@ async function loadData() {
       fetchIntraday('1321.T', targetDate),  // ^N225 インデックスは取得困難 → ETF で代替
     ]);
     const sIntraData = sIntra.status === 'fulfilled' ? sIntra.value : null;
-    // 1321.T は日経225の 1/10 水準で取引されるため × 10 でインデックス水準に換算
+    // 1321.T の価格は日経平均と概ね 1:1 のため換算不要
     const nIntraData = (nIntra.status === 'fulfilled' && nIntra.value)
-      ? nIntra.value.map(d => ({ ...d, price: Math.round(d.price * 10) }))
+      ? nIntra.value
       : null;
 
     st.stockData  = sIntraData || generateIntraday(sRes.ohlc.open, sRes.ohlc.high, sRes.ohlc.low, sRes.ohlc.close);
