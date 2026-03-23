@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>デイトレードシミュレーター</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',Meiryo,sans-serif;min-height:100vh;font-size:14px}
+
+/* ── Header ── */
+.header{background:#161b22;border-bottom:1px solid #30363d;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.header h1{font-size:16px;font-weight:700;color:#58a6ff;white-space:nowrap}
+.api-row{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
+.api-row label{font-size:12px;color:#8b949e;white-space:nowrap}
+.api-row input{background:#21262d;border:1px solid #30363d;color:#e6edf3;padding:5px 10px;border-radius:6px;font-size:12px;width:180px}
+.api-row input:focus{outline:none;border-color:#58a6ff}
+.btn-load{background:#238636;color:#fff;border:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap}
+.btn-load:hover{background:#2da44e}
+.btn-load:disabled{opacity:.5;cursor:not-allowed}
+
+/* ── Stock info bar ── */
+.info-bar{background:#161b22;border-bottom:1px solid #30363d;padding:8px 16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.info-item{display:flex;flex-direction:column;gap:2px}
+.info-label{font-size:11px;color:#8b949e}
+.info-value{font-size:15px;font-weight:600}
+#currentPrice{font-size:22px;font-weight:700}
+.up{color:#3fb950}.down{color:#f85149}.neu{color:#8b949e}
+.status-msg{margin-left:auto;font-size:12px;color:#8b949e;padding:4px 10px;background:#21262d;border-radius:6px;max-width:320px;word-break:break-all}
+
+/* ── Charts ── */
+.charts-wrap{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:#30363d}
+.chart-panel{background:#0d1117;padding:10px}
+.chart-label{font-size:12px;color:#8b949e;margin-bottom:6px}
+canvas{display:block;width:100%;height:280px}
+
+/* ── Controls ── */
+.controls{background:#161b22;border-top:1px solid #30363d;border-bottom:1px solid #30363d;padding:10px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sim-time{font-size:26px;font-weight:700;font-family:monospace;color:#f0f6fc;min-width:70px}
+.ctrl-btn{padding:7px 18px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;transition:opacity .15s}
+.ctrl-btn:hover{opacity:.85}
+.ctrl-btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-start{background:#238636;color:#fff}
+.btn-pause{background:#9a6700;color:#fff}
+.btn-fast{background:#388bfd;color:#fff}
+.btn-fast.active{background:#f85149}
+.btn-reset{background:#484f58;color:#fff}
+.speed-label{font-size:12px;color:#8b949e;margin-left:4px}
+
+/* ── Trading + PnL ── */
+.bottom{display:grid;grid-template-columns:auto 1fr;gap:1px;background:#30363d}
+.trade-panel{background:#161b22;padding:14px 16px;display:flex;flex-direction:column;gap:12px;min-width:260px}
+.trade-panel h3{font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.6px}
+.trade-btns{display:flex;gap:10px}
+.btn-buy,.btn-sell{flex:1;padding:14px 8px;border:none;border-radius:8px;cursor:pointer;font-size:17px;font-weight:700;line-height:1.3;transition:filter .15s}
+.btn-buy{background:#1a7f37;color:#fff}
+.btn-buy:hover{filter:brightness(1.2)}
+.btn-sell{background:#b62324;color:#fff}
+.btn-sell:hover{filter:brightness(1.2)}
+.btn-buy:disabled,.btn-sell:disabled{opacity:.35;cursor:not-allowed}
+.btn-buy span,.btn-sell span{display:block;font-size:11px;font-weight:400;opacity:.85}
+
+.pnl-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.pnl-card{background:#21262d;border-radius:8px;padding:10px}
+.pnl-card-label{font-size:11px;color:#8b949e;margin-bottom:4px}
+.pnl-card-val{font-size:18px;font-weight:700}
+
+.pos-panel{background:#161b22;padding:14px 16px}
+.pos-panel h3{font-size:12px;color:#8b949e;text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+.pos-info{background:#21262d;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:6px}
+.pos-info-row{display:flex;justify-content:space-between;align-items:center}
+.pos-info-key{font-size:12px;color:#8b949e}
+.pos-info-val{font-size:14px;font-weight:600}
+
+.trade-log{margin-top:12px;overflow-y:auto;max-height:130px}
+.trade-log table{width:100%;border-collapse:collapse;font-size:12px}
+.trade-log th{color:#8b949e;font-weight:500;padding:4px 8px;border-bottom:1px solid #30363d;text-align:left}
+.trade-log td{padding:4px 8px;border-bottom:1px solid #21262d}
+.long-tag{color:#3fb950}.short-tag{color:#f85149}
+
+/* ── Responsive ── */
+@media(max-width:700px){
+  .charts-wrap,.bottom{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📈 デイトレードシミュレーター</h1>
+  <div class="api-row">
+    <label>Alpha Vantage APIキー:</label>
+    <input type="text" id="apiKeyInput" placeholder="例: ABCDEFGHIJKLMNOP" />
+    <button class="btn-load" id="btnLoad" onclick="loadData()">データ読込</button>
+  </div>
+</div>
+
+<div class="info-bar">
+  <div class="info-item">
+    <span class="info-label">銘柄</span>
+    <span class="info-value" id="stockName">---</span>
+  </div>
+  <div class="info-item">
+    <span class="info-label">現在値</span>
+    <span id="currentPrice" class="info-value neu">--</span>
+  </div>
+  <div class="info-item">
+    <span class="info-label">前日比</span>
+    <span id="priceChange" class="info-value neu">---</span>
+  </div>
+  <div class="info-item">
+    <span class="info-label">初期資金</span>
+    <span class="info-value">¥10,000,000</span>
+  </div>
+  <div id="statusMsg" class="status-msg">APIキーを入力してデータを読み込んでください</div>
+</div>
+
+<div class="charts-wrap">
+  <div class="chart-panel">
+    <div class="chart-label" id="nikkeiLabel">日経225参考チャート (1321.T × 10)</div>
+    <canvas id="nikkeiChart"></canvas>
+  </div>
+  <div class="chart-panel">
+    <div class="chart-label" id="stockLabel">銘柄チャート</div>
+    <canvas id="stockChart"></canvas>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="sim-time" id="simTime">09:00</div>
+  <button class="ctrl-btn btn-start" id="btnStart" onclick="toggleSim()" disabled>▶ 開始</button>
+  <button class="ctrl-btn btn-fast" id="btnFast" onclick="toggleFast()" disabled>⏩ 早送り</button>
+  <button class="ctrl-btn btn-reset" onclick="resetSim()" disabled id="btnReset">↺ リセット</button>
+  <span class="speed-label" id="speedLabel">通常 (1秒 = 1分)</span>
+</div>
+
+<div class="bottom">
+  <div class="trade-panel">
+    <h3>売買注文 (1単元 100株)</h3>
+    <div class="trade-btns">
+      <button class="btn-buy" id="btnBuy" onclick="executeTrade('buy')" disabled>
+        買い<span>100株 新規 / 空売返済</span>
+      </button>
+      <button class="btn-sell" id="btnSell" onclick="executeTrade('sell')" disabled>
+        売り<span>100株 新規 / 買返済</span>
+      </button>
+    </div>
+    <div class="pnl-row">
+      <div class="pnl-card">
+        <div class="pnl-card-label">評価損益</div>
+        <div class="pnl-card-val neu" id="unrealizedPnL">¥0</div>
+      </div>
+      <div class="pnl-card">
+        <div class="pnl-card-label">確定損益（本日合計）</div>
+        <div class="pnl-card-val neu" id="realizedPnL">¥0</div>
+      </div>
+    </div>
+    <div class="pnl-row">
+      <div class="pnl-card" style="grid-column:1/-1">
+        <div class="pnl-card-label">総損益（評価＋確定）</div>
+        <div class="pnl-card-val neu" id="totalPnL">¥0</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pos-panel">
+    <h3>現在ポジション</h3>
+    <div class="pos-info" id="posInfo">
+      <div class="pos-info-row">
+        <span class="pos-info-key">方向</span>
+        <span class="pos-info-val neu" id="posDirection">なし</span>
+      </div>
+      <div class="pos-info-row">
+        <span class="pos-info-key">数量</span>
+        <span class="pos-info-val" id="posShares">0 株</span>
+      </div>
+      <div class="pos-info-row">
+        <span class="pos-info-key">平均取得単価</span>
+        <span class="pos-info-val" id="posAvgPrice">---</span>
+      </div>
+      <div class="pos-info-row">
+        <span class="pos-info-key">取引コスト (往復概算)</span>
+        <span class="pos-info-val" id="posCost">---</span>
+      </div>
+    </div>
+
+    <div class="trade-log">
+      <table>
+        <thead>
+          <tr><th>時刻</th><th>方向</th><th>数量</th><th>約定値</th><th>損益</th></tr>
+        </thead>
+        <tbody id="tradeLogBody">
+          <tr><td colspan="5" style="color:#8b949e;text-align:center;padding:10px">約定履歴なし</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// ================================================================
+// CONSTANTS
+// ================================================================
+const SESSION1_START = 9 * 60;        // 540
+const SESSION1_END   = 11 * 60 + 30;  // 690  (150分)
+const SESSION2_START = 12 * 60 + 30;  // 750
+const SESSION2_END   = 15 * 60 + 30;  // 930  (180分)
+const TOTAL_MINS     = 150 + 180;     // 330
+
+const PRIME_STOCKS = [
+  {symbol:'7203.T', name:'トヨタ自動車'},
+  {symbol:'6758.T', name:'ソニーグループ'},
+  {symbol:'9984.T', name:'ソフトバンクグループ'},
+  {symbol:'8306.T', name:'三菱UFJフィナンシャル'},
+  {symbol:'6861.T', name:'キーエンス'},
+  {symbol:'7974.T', name:'任天堂'},
+  {symbol:'4063.T', name:'信越化学工業'},
+  {symbol:'6954.T', name:'ファナック'},
+  {symbol:'9432.T', name:'NTT'},
+  {symbol:'8035.T', name:'東京エレクトロン'},
+  {symbol:'6501.T', name:'日立製作所'},
+  {symbol:'4661.T', name:'オリエンタルランド'},
+  {symbol:'9983.T', name:'ファーストリテイリング'},
+  {symbol:'6367.T', name:'ダイキン工業'},
+  {symbol:'6902.T', name:'デンソー'},
+  {symbol:'7267.T', name:'ホンダ'},
+  {symbol:'6981.T', name:'村田製作所'},
+  {symbol:'4543.T', name:'テルモ'},
+  {symbol:'8316.T', name:'三井住友FG'},
+  {symbol:'2914.T', name:'JT'},
+];
+
+// ================================================================
+// STATE
+// ================================================================
+const st = {
+  apiKey: '',
+  nikkeiData: [],   // [{minute, price}] × 330
+  stockData:  [],   // [{minute, price}] × 330
+  stockSymbol: '', stockName: '',
+  prevCloseNikkei: null, prevCloseStock: null,
+  currentIdx: 0,
+  timer: null, isRunning: false, isFast: false,
+  dataLoaded: false,
+  // Position (net)
+  netPos: 0,        // >0=long, <0=short, 0=flat
+  avgPrice: 0,
+  realizedPnL: 0,
+  tradeLog: [],     // [{time, dir, shares, price, pnl}]
+};
+
+// ================================================================
+// TIME HELPERS
+// ================================================================
+function idxToMin(i) {
+  return i < 150 ? SESSION1_START + i : SESSION2_START + (i - 150);
+}
+function minToHHMM(m) {
+  return `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+}
+function fmtYen(v, sign=true) {
+  const s = sign && v >= 0 ? '+' : '';
+  return s + '¥' + Math.round(v).toLocaleString('ja-JP');
+}
+function fmtPrice(v) {
+  if (v == null) return '---';
+  return '¥' + v.toLocaleString('ja-JP', {minimumFractionDigits:0, maximumFractionDigits:2});
+}
+
+// ================================================================
+// API FETCH
+// ================================================================
+async function fetchIntraday(symbol, scale=1) {
+  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY` +
+    `&symbol=${encodeURIComponent(symbol)}&interval=1min&outputsize=full&apikey=${st.apiKey}`;
+  const res = await fetch(url);
+  const json = await res.json();
+
+  const series = json['Time Series (1min)'];
+  if (!series) {
+    const msg = json['Note'] || json['Information'] || json['Error Message'] || JSON.stringify(json);
+    throw new Error(msg);
+  }
+
+  // Group by date (key: "YYYY-MM-DD")
+  const byDate = {};
+  Object.entries(series).forEach(([ts, v]) => {
+    const [date, time] = ts.split(' ');
+    if (!byDate[date]) byDate[date] = {};
+    const [hh, mm] = time.split(':').map(Number);
+    const min = hh*60 + mm;
+    // Only store trading-hours data
+    if ((min >= SESSION1_START && min < SESSION1_END) ||
+        (min >= SESSION2_START && min <= SESSION2_END)) {
+      byDate[date][min] = parseFloat(v['4. close']) * scale;
+    }
+  });
+
+  // Pick most recent date that has opening data
+  const dates = Object.keys(byDate).sort().reverse();
+  for (const d of dates) {
+    const md = byDate[d];
+    const keys = Object.keys(md).map(Number);
+    if (keys.length < 30) continue; // sparse – skip
+    const openMin = Math.min(...keys);
+    let last = md[openMin];
+
+    // Fill all 330 indices
+    const result = [];
+    for (let i = 0; i < TOTAL_MINS; i++) {
+      const min = idxToMin(i);
+      if (md[min] !== undefined) last = md[min];
+      result.push({minute: min, price: last});
+    }
+
+    // prevClose: use first available price as stand-in
+    const prevClose = md[openMin];
+    return {data: result, prevClose, date: d};
+  }
+  throw new Error('有効な取引データが見つかりませんでした（データが不足している可能性があります）');
+}
+
+// ================================================================
+// LOAD DATA
+// ================================================================
+async function loadData() {
+  st.apiKey = document.getElementById('apiKeyInput').value.trim();
+  if (!st.apiKey) { alert('APIキーを入力してください'); return; }
+
+  const btn = document.getElementById('btnLoad');
+  btn.disabled = true; btn.textContent = '読込中…';
+  setStatus('データ取得中… (2リクエスト)');
+
+  // Pick random stock
+  const stock = PRIME_STOCKS[Math.floor(Math.random() * PRIME_STOCKS.length)];
+  st.stockSymbol = stock.symbol;
+  st.stockName   = stock.name;
+
+  try {
+    // Nikkei: 1321.T (Nikkei225 ETF) × 10 ≈ 日経平均
+    const [nRes, sRes] = await Promise.all([
+      fetchIntraday('1321.T', 10),
+      fetchIntraday(stock.symbol, 1),
+    ]);
+
+    st.nikkeiData = nRes.data; st.prevCloseNikkei = nRes.prevClose;
+    st.stockData  = sRes.data; st.prevCloseStock  = sRes.prevClose;
+    st.dataLoaded = true;
+
+    document.getElementById('nikkeiLabel').textContent =
+      `日経225参考チャート (1321.T × 10) — ${nRes.date}`;
+    document.getElementById('stockLabel').textContent =
+      `${stock.name} (${stock.symbol}) — ${sRes.date}`;
+    document.getElementById('stockName').textContent =
+      `${stock.name} (${stock.symbol})`;
+
+    // Enable controls
+    ['btnStart','btnFast','btnReset','btnBuy','btnSell'].forEach(id =>
+      document.getElementById(id).disabled = false);
+
+    resetSim(true);
+    setStatus(`読込完了 ✓  日経 ${nRes.date} / ${stock.name} ${sRes.date}`);
+  } catch(e) {
+    setStatus('エラー: ' + e.message);
+    alert('データ取得エラー:\n' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'データ読込';
+  }
+}
+
+// ================================================================
+// CHART DRAWING
+// ================================================================
+function drawChart(id, data, endIdx, prevClose, showFull) {
+  const canvas = document.getElementById(id);
+  const dpr    = window.devicePixelRatio || 1;
+  const cssW   = canvas.clientWidth  || 600;
+  const cssH   = 280;
+  canvas.width  = cssW * dpr;
+  canvas.height = cssH * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const W = cssW, H = cssH;
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  if (!data || data.length === 0) {
+    ctx.fillStyle = '#8b949e'; ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('データなし', W/2, H/2); return;
+  }
+
+  const PAD = {top:12, right:68, bottom:28, left:6};
+  const pw = W - PAD.left - PAD.right;
+  const ph = H - PAD.top  - PAD.bottom;
+
+  const displayEnd = showFull ? data.length - 1 : Math.max(endIdx, 0);
+  const slice = data.slice(0, displayEnd + 1);
+  if (slice.length === 0) return;
+
+  const prices = slice.map(d => d.price);
+  let lo = Math.min(...prices), hi = Math.max(...prices);
+  if (prevClose != null) { lo = Math.min(lo, prevClose); hi = Math.max(hi, prevClose); }
+  const rng  = hi - lo || 1;
+  const pad5 = rng * 0.05;
+  const yLo  = lo - pad5, yHi = hi + pad5;
+  const yRng = yHi - yLo;
+
+  const xOf = i => PAD.left + (i / (TOTAL_MINS-1)) * pw;
+  const yOf = p => PAD.top + ph - ((p - yLo) / yRng) * ph;
+
+  // Grid
+  ctx.strokeStyle = '#21262d'; ctx.lineWidth = 1;
+  for (let g=0; g<=4; g++) {
+    const y = PAD.top + ph/4 * g;
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(PAD.left + pw, y); ctx.stroke();
+  }
+
+  // Lunch-break separator
+  const lunchX = xOf(150);
+  ctx.strokeStyle = '#30363d'; ctx.lineWidth = 2;
+  ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.moveTo(lunchX, PAD.top); ctx.lineTo(lunchX, PAD.top+ph); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Prev-close line
+  if (prevClose != null) {
+    const pcY = yOf(prevClose);
+    ctx.strokeStyle = '#484f58'; ctx.lineWidth = 1;
+    ctx.setLineDash([5,4]);
+    ctx.beginPath(); ctx.moveTo(PAD.left, pcY); ctx.lineTo(PAD.left+pw, pcY); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Price line
+  const lastP = slice[slice.length-1].price;
+  const lineColor = prevClose == null ? '#58a6ff'
+                  : (lastP >= prevClose ? '#3fb950' : '#f85149');
+
+  ctx.strokeStyle = lineColor; ctx.lineWidth = 2;
+  ctx.beginPath();
+  slice.forEach((d, i) => {
+    const x = xOf(i), y = yOf(d.price);
+    i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+
+  // Current-time marker (stock chart only)
+  if (!showFull && displayEnd > 0) {
+    const cx = xOf(displayEnd);
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth=1;
+    ctx.setLineDash([2,2]);
+    ctx.beginPath(); ctx.moveTo(cx,PAD.top); ctx.lineTo(cx,PAD.top+ph); ctx.stroke();
+    ctx.setLineDash([]);
+    const cy = yOf(slice[slice.length-1].price);
+    ctx.fillStyle = lineColor;
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Y-axis labels
+  ctx.fillStyle = '#8b949e'; ctx.font = '10px monospace'; ctx.textAlign = 'left';
+  for (let g=0; g<=4; g++) {
+    const p = yLo + yRng/4*(4-g);
+    const y = PAD.top + ph/4*g;
+    ctx.fillText(Math.round(p).toLocaleString('ja-JP'), PAD.left+pw+4, y+4);
+  }
+
+  // X-axis time labels
+  ctx.fillStyle = '#8b949e'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+  [[0,'9:00'],[75,'10:15'],[149,'11:30'],[150,'12:30'],[240,'14:00'],[329,'15:30']].forEach(([i,label]) => {
+    if (i <= data.length-1) ctx.fillText(label, xOf(i), H-6);
+  });
+}
+
+function redrawAll() {
+  drawChart('nikkeiChart', st.nikkeiData, st.nikkeiData.length-1, st.prevCloseNikkei, true);
+  drawChart('stockChart',  st.stockData,  st.currentIdx, st.prevCloseStock, false);
+}
+
+// ================================================================
+// SIMULATION
+// ================================================================
+function toggleSim() {
+  if (!st.dataLoaded) return;
+  if (st.isRunning) { pauseSim(); } else { startSim(); }
+}
+
+function startSim() {
+  if (st.currentIdx >= TOTAL_MINS-1) return;
+  st.isRunning = true;
+  document.getElementById('btnStart').textContent = '⏸ 一時停止';
+  document.getElementById('btnStart').className = 'ctrl-btn btn-pause';
+
+  st.timer = setInterval(() => {
+    const steps = st.isFast ? 5 : 1;
+    st.currentIdx = Math.min(st.currentIdx + steps, TOTAL_MINS-1);
+    refreshUI();
+    if (st.currentIdx >= TOTAL_MINS-1) {
+      pauseSim();
+      setStatus('📊 本日の取引終了（15:30）');
+    }
+  }, 1000);
+}
+
+function pauseSim() {
+  clearInterval(st.timer); st.timer = null; st.isRunning = false;
+  document.getElementById('btnStart').textContent = '▶ 再開';
+  document.getElementById('btnStart').className = 'ctrl-btn btn-start';
+}
+
+function resetSim(keepData=false) {
+  pauseSim();
+  st.currentIdx   = 0;
+  st.netPos       = 0;
+  st.avgPrice     = 0;
+  st.realizedPnL  = 0;
+  st.tradeLog     = [];
+  st.isFast       = false;
+  document.getElementById('btnFast').classList.remove('active');
+  document.getElementById('speedLabel').textContent = '通常 (1秒 = 1分)';
+  document.getElementById('btnStart').textContent = '▶ 開始';
+  document.getElementById('btnStart').className = 'ctrl-btn btn-start';
+  if (st.dataLoaded) refreshUI();
+}
+
+function toggleFast() {
+  st.isFast = !st.isFast;
+  const btn = document.getElementById('btnFast');
+  if (st.isFast) {
+    btn.classList.add('active');
+    document.getElementById('speedLabel').textContent = '早送り (1秒 = 5分)';
+  } else {
+    btn.classList.remove('active');
+    document.getElementById('speedLabel').textContent = '通常 (1秒 = 1分)';
+  }
+}
+
+// ================================================================
+// TRADING
+// ================================================================
+function executeTrade(type) {
+  if (!st.dataLoaded || !st.isRunning) {
+    if (!st.isRunning) alert('シミュレーションを開始してから注文してください');
+    return;
+  }
+  const price  = st.stockData[st.currentIdx].price;
+  const shares = 100;
+  const delta  = type === 'buy' ? shares : -shares;
+  const timeStr = minToHHMM(idxToMin(st.currentIdx));
+  let closedPnl = null;
+
+  if (st.netPos === 0) {
+    // 新規建て
+    st.netPos   = delta;
+    st.avgPrice = price;
+  } else if (Math.sign(st.netPos) === Math.sign(delta)) {
+    // 同方向追加（ドテン前の同方向）
+    const totalShares = Math.abs(st.netPos) + shares;
+    st.avgPrice = (st.avgPrice * Math.abs(st.netPos) + price * shares) / totalShares;
+    st.netPos  += delta;
+  } else {
+    // 反対売買
+    const absPos   = Math.abs(st.netPos);
+    const closeShares = Math.min(absPos, shares);
+    const pnlPerShare = st.netPos > 0 ? (price - st.avgPrice) : (st.avgPrice - price);
+    closedPnl = pnlPerShare * closeShares;
+    st.realizedPnL += closedPnl;
+
+    const remain = absPos - shares; // negative if over-close
+    if (remain > 0) {
+      // 一部決済
+      st.netPos = st.netPos > 0 ? remain : -remain;
+      // avgPrice unchanged
+    } else if (remain === 0) {
+      // 全決済
+      st.netPos = 0; st.avgPrice = 0;
+    } else {
+      // ドテン
+      st.netPos   = delta > 0 ? -remain : remain; // open opposite
+      st.avgPrice = price;
+    }
+  }
+
+  // Log
+  const dir = type === 'buy' ? '買' : '売';
+  st.tradeLog.unshift({time: timeStr, dir, shares, price, pnl: closedPnl});
+
+  refreshUI();
+}
+
+// ================================================================
+// UI REFRESH
+// ================================================================
+function refreshUI() {
+  const idx    = st.currentIdx;
+  const minute = idxToMin(idx);
+  const price  = st.stockData[idx]?.price ?? 0;
+
+  // Time
+  document.getElementById('simTime').textContent = minToHHMM(minute);
+
+  // Price display
+  document.getElementById('currentPrice').textContent = fmtPrice(price);
+  if (st.prevCloseStock) {
+    const diff = price - st.prevCloseStock;
+    const pct  = (diff / st.prevCloseStock * 100).toFixed(2);
+    const s    = diff >= 0 ? '+' : '';
+    const el   = document.getElementById('priceChange');
+    el.textContent = `${s}${Math.round(diff).toLocaleString()} (${s}${pct}%)`;
+    el.className = 'info-value ' + (diff >= 0 ? 'up' : 'down');
+  }
+
+  // PnL
+  const unrealized = st.netPos === 0 ? 0
+    : st.netPos > 0
+      ? (price - st.avgPrice) * st.netPos
+      : (st.avgPrice - price) * Math.abs(st.netPos);
+  const total = unrealized + st.realizedPnL;
+
+  setValColor('unrealizedPnL', unrealized, fmtYen(unrealized));
+  setValColor('realizedPnL',   st.realizedPnL, fmtYen(st.realizedPnL));
+  setValColor('totalPnL',      total, fmtYen(total));
+
+  // Position info
+  const dirEl = document.getElementById('posDirection');
+  if (st.netPos > 0) {
+    dirEl.textContent = 'ロング（買い）';
+    dirEl.className = 'pos-info-val long-tag';
+  } else if (st.netPos < 0) {
+    dirEl.textContent = 'ショート（売り）';
+    dirEl.className = 'pos-info-val short-tag';
+  } else {
+    dirEl.textContent = 'なし（フラット）';
+    dirEl.className = 'pos-info-val neu';
+  }
+  document.getElementById('posShares').textContent =
+    st.netPos === 0 ? '0 株' : `${Math.abs(st.netPos)} 株`;
+  document.getElementById('posAvgPrice').textContent =
+    st.netPos === 0 ? '---' : fmtPrice(st.avgPrice);
+  const cost = st.netPos !== 0 ? Math.abs(st.netPos) * st.avgPrice * 0.001 : 0;
+  document.getElementById('posCost').textContent =
+    st.netPos === 0 ? '---' : `概算 ¥${Math.round(cost).toLocaleString()}`;
+
+  // Trade log
+  const tbody = document.getElementById('tradeLogBody');
+  if (st.tradeLog.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#8b949e;text-align:center;padding:8px">約定履歴なし</td></tr>';
+  } else {
+    tbody.innerHTML = st.tradeLog.slice(0,20).map(t => {
+      const cls   = t.dir === '買' ? 'long-tag' : 'short-tag';
+      const pnlStr = t.pnl == null ? '-' : `<span class="${t.pnl>=0?'up':'down'}">${fmtYen(t.pnl)}</span>`;
+      return `<tr>
+        <td>${t.time}</td>
+        <td class="${cls}">${t.dir}</td>
+        <td>${t.shares}株</td>
+        <td>${fmtPrice(t.price)}</td>
+        <td>${pnlStr}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Charts
+  redrawAll();
+}
+
+function setValColor(id, val, text) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'pnl-card-val ' + (val > 0 ? 'up' : val < 0 ? 'down' : 'neu');
+}
+
+function setStatus(msg) {
+  document.getElementById('statusMsg').textContent = msg;
+}
+
+// ================================================================
+// INIT
+// ================================================================
+window.addEventListener('resize', () => { if (st.dataLoaded) redrawAll(); });
+
+// Draw empty canvases on load
+(function init() {
+  ['nikkeiChart','stockChart'].forEach(id => {
+    const c = document.getElementById(id);
+    const ctx = c.getContext('2d');
+    c.width  = (c.clientWidth  || 600) * (window.devicePixelRatio||1);
+    c.height = 280 * (window.devicePixelRatio||1);
+    ctx.scale(window.devicePixelRatio||1, window.devicePixelRatio||1);
+    ctx.fillStyle = '#0d1117'; ctx.fillRect(0,0,c.width,c.height);
+    ctx.fillStyle = '#8b949e'; ctx.font='13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('APIキーを入力してデータを読み込んでください', (c.clientWidth||600)/2, 140);
+  });
+})();
+</script>
+</body>
+</html>
