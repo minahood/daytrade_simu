@@ -290,155 +290,109 @@ function ohlcCacheSet(symbol, targetDate, data) {
 }
 
 // ================================================================
-// YAHOO FINANCE FETCH (無料・APIキー不要)
+// OHLC 取得（Yahoo Finance + stooq を並列レース、最速ソースを採用）
 // ================================================================
-async function fetchYahoo(symbol, targetDate = '') {
-  const cached = ohlcCacheGet(symbol, targetDate);
-  if (cached) return cached;
 
+// プロキシ変換関数リスト（Yahoo/stooq 共用）
+const OHLC_PROX = [
+  u => 'https://api.allorigins.win/raw?url='      + encodeURIComponent(u),
+  u => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
+  u => 'https://corsproxy.io/?'                   + encodeURIComponent(u),
+  u => 'https://thingproxy.freeboard.io/fetch/'   + u,
+];
+
+function buildYahooOhlcUrl(symbol, targetDate) {
   let query;
   if (targetDate) {
-    // 指定日の前後を含む範囲で取得（prevClose確保のため10日前から）
     const t = new Date(targetDate).getTime();
-    const period1 = Math.floor((t - 14 * 86400000) / 1000);
-    const period2 = Math.floor((t +  3 * 86400000) / 1000);
-    query = `interval=1d&period1=${period1}&period2=${period2}`;
+    query = `interval=1d&period1=${Math.floor((t - 14*86400000)/1000)}&period2=${Math.floor((t + 3*86400000)/1000)}`;
   } else {
     query = 'interval=1d&range=1mo';
   }
+  return `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${query}`;
+}
 
-  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${query}`;
+function buildStooqOhlcUrl(symbol, targetDate) {
+  const s      = /^\^N225$/i.test(symbol) ? '^nky' : symbol.replace(/\.T$/i, '.jp');
+  const endStr = targetDate || new Date().toISOString().slice(0, 10);
+  const d1     = new Date(new Date(endStr).getTime() - 20*86400000).toISOString().slice(0,10).replace(/-/g,'');
+  const d2     = endStr.replace(/-/g, '');
+  return `https://stooq.com/q/d/l/?s=${encodeURIComponent(s)}&i=d&d1=${d1}&d2=${d2}`;
+}
 
-  // 直接(query1/query2) → allorigins → codetabs → thingproxy の順に試す
-  const q2Url = yfUrl.replace('query1.finance.yahoo.com', 'query2.finance.yahoo.com');
-  const candidates = [
-    yfUrl,
-    q2Url,
-    'https://api.allorigins.win/raw?url='      + encodeURIComponent(yfUrl),
-    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(yfUrl),
-    'https://thingproxy.freeboard.io/fetch/'   + yfUrl,
-  ];
-  let json;
-  for (const url of candidates) {
-    const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 6000);
-    try {
-      const res  = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) { clearTimeout(tid); continue; }
-      const data = await res.json();
-      clearTimeout(tid);
-      if (data?.chart?.result?.[0]) { json = data; break; }
-    } catch (_) { clearTimeout(tid); }
-  }
-  if (!json) {
-    const r = await fetchStooq(symbol, targetDate);
-    ohlcCacheSet(symbol, targetDate, r);
-    return r;
-  }
-
+function parseYahooOhlc(json, symbol, targetDate) {
   const result = json?.chart?.result?.[0];
-  if (!result) {
-    const err = json?.chart?.error?.description || JSON.stringify(json).slice(0, 120);
-    throw new Error(`${symbol}: ${err}`);
-  }
-
-  const q  = result.indicators.quote[0];
-  const ts = result.timestamp;
-
+  if (!result) throw new Error(json?.chart?.error?.description || `${symbol}: データなし`);
+  const q = result.indicators.quote[0], ts = result.timestamp;
   let last;
   if (targetDate) {
-    // 指定日に一致するエントリを末尾から探す（UTC/JST両方で照合）
     last = -1;
     for (let i = ts.length - 1; i >= 0; i--) {
-      const dUtc = new Date(ts[i] * 1000).toISOString().slice(0, 10);
-      const dJst = new Date((ts[i] + 9 * 3600) * 1000).toISOString().slice(0, 10);
-      if ((dUtc === targetDate || dJst === targetDate) && q.open[i] != null) {
-        last = i; break;
-      }
+      const dUtc = new Date(ts[i]*1000).toISOString().slice(0,10);
+      const dJst = new Date((ts[i]+9*3600)*1000).toISOString().slice(0,10);
+      if ((dUtc === targetDate || dJst === targetDate) && q.open[i] != null) { last = i; break; }
     }
     if (last === -1) throw new Error(`${targetDate} は東証非取引日です（土日・祝日・年末年始など）`);
   } else {
-    // OHLCが揃っている最新の取引日を末尾から探す
     last = ts.length - 1;
     while (last > 0 && (q.open[last] == null || q.close[last] == null)) last--;
     if (q.open[last] == null) throw new Error(`${symbol}: 有効なOHLCデータが見つかりません`);
   }
-
-  const ohlc = {
-    open:  q.open[last],
-    high:  q.high[last],
-    low:   q.low[last],
-    close: q.close[last],
-  };
-  const prevClose = (last > 0 ? q.close[last - 1] : null) ?? result.meta.previousClose;
-  const date = new Date((ts[last] + 9 * 3600) * 1000).toISOString().slice(0, 10);
-  const r = { ohlc, prevClose, date, source: 'yahoo' };
-  ohlcCacheSet(symbol, targetDate, r);
-  return r;
+  const ohlc     = { open: q.open[last], high: q.high[last], low: q.low[last], close: q.close[last] };
+  const prevClose = (last > 0 ? q.close[last-1] : null) ?? result.meta.previousClose;
+  const date      = new Date((ts[last]+9*3600)*1000).toISOString().slice(0,10);
+  return { ohlc, prevClose, date, source: 'yahoo' };
 }
 
-// ================================================================
-// STOOQ FALLBACK (Yahoo Finance rate-limit 時の代替ソース)
-// ================================================================
-async function fetchStooq(symbol, targetDate) {
-  // シンボル変換: 9984.T → 9984.jp, ^N225 → ^nky
-  const s = /^\^N225$/i.test(symbol) ? '^nky'
-           : symbol.replace(/\.T$/i, '.jp');
-
-  // prevClose 確保のため 20 日前から取得
-  const endStr  = targetDate || new Date().toISOString().slice(0, 10);
-  const startMs = new Date(endStr).getTime() - 20 * 86400000;
-  const d1 = new Date(startMs).toISOString().slice(0, 10).replace(/-/g, '');
-  const d2 = endStr.replace(/-/g, '');
-
-  const stooqUrl = `https://stooq.com/q/d/l/?s=${encodeURIComponent(s)}&i=d&d1=${d1}&d2=${d2}`;
-  const candidates = [
-    'https://api.allorigins.win/raw?url='      + encodeURIComponent(stooqUrl),
-    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(stooqUrl),
-    'https://thingproxy.freeboard.io/fetch/'   + stooqUrl,
-  ];
-
-  let csv = null;
-  for (const url of candidates) {
-    const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 8000);
-    try {
-      const res  = await fetch(url, { signal: ctrl.signal });
-      clearTimeout(tid);
-      if (!res.ok) continue;
-      const text = await res.text();
-      if (text.startsWith('Date,')) { csv = text; break; }
-    } catch (_) { clearTimeout(tid); }
-  }
-  if (!csv) throw new Error(`${symbol}: 全ソースからデータを取得できませんでした`);
-
-  // CSV パース（Date,Open,High,Low,Close,Volume）日付昇順にソート
+function parseStooqCsv(csv, symbol, targetDate) {
   const rows = csv.trim().split('\n').slice(1)
-    .map(line => {
-      const [date, open, high, low, close] = line.split(',');
-      return { date, open: +open, high: +high, low: +low, close: +close };
-    })
+    .map(line => { const [date,open,high,low,close] = line.split(','); return {date,open:+open,high:+high,low:+low,close:+close}; })
     .filter(r => r.open && r.close)
-    .sort((a, b) => a.date < b.date ? -1 : 1);
-
+    .sort((a,b) => a.date < b.date ? -1 : 1);
   if (!rows.length) throw new Error(`${symbol}: stooqからデータが取得できません`);
-
   let last;
   if (targetDate) {
     last = rows.findLastIndex(r => r.date === targetDate);
     if (last === -1) throw new Error(`${targetDate} は東証非取引日です（土日・祝日・年末年始など）`);
-  } else {
-    last = rows.length - 1;
-  }
+  } else { last = rows.length - 1; }
+  const row = rows[last], prevClose = last > 0 ? rows[last-1].close : null;
+  return { ohlc: {open:row.open,high:row.high,low:row.low,close:row.close}, prevClose, date:row.date, source:'stooq' };
+}
 
-  const row       = rows[last];
-  const prevClose = last > 0 ? rows[last - 1].close : null;
-  return {
-    ohlc: { open: row.open, high: row.high, low: row.low, close: row.close },
-    prevClose,
-    date: row.date,
-    source: 'stooq',
-  };
+async function fetchYahoo(symbol, targetDate = '') {
+  const cached = ohlcCacheGet(symbol, targetDate);
+  if (cached) return cached;
+
+  const yfUrl    = buildYahooOhlcUrl(symbol, targetDate);
+  const q2Url    = yfUrl.replace('query1.finance.yahoo.com', 'query2.finance.yahoo.com');
+  const stooqUrl = buildStooqOhlcUrl(symbol, targetDate);
+
+  const ctrl = new AbortController();
+  const tid  = setTimeout(() => ctrl.abort(), 8000);
+
+  const tryY = url =>
+    fetch(url, { signal: ctrl.signal })
+      .then(res => { if (!res.ok) throw 0; return res.json(); })
+      .then(d   => { if (!d?.chart?.result?.[0]) throw 0; return parseYahooOhlc(d, symbol, targetDate); });
+
+  const tryS = url =>
+    fetch(url, { signal: ctrl.signal })
+      .then(res => { if (!res.ok) throw 0; return res.text(); })
+      .then(t   => { if (!t.startsWith('Date,')) throw 0; return parseStooqCsv(t, symbol, targetDate); });
+
+  try {
+    const r = await Promise.any([
+      tryY(yfUrl), tryY(q2Url),               // Yahoo 直接（CORS通る環境のみ有効）
+      ...OHLC_PROX.map(fn => tryY(fn(yfUrl))), // Yahoo 経由プロキシ
+      ...OHLC_PROX.map(fn => tryS(fn(stooqUrl))), // stooq 経由プロキシ（同時並走）
+    ]);
+    clearTimeout(tid); ctrl.abort();
+    ohlcCacheSet(symbol, targetDate, r);
+    return r;
+  } catch (_) {
+    clearTimeout(tid);
+    throw new Error(`${symbol}: 全ソースからデータを取得できませんでした`);
+  }
 }
 
 // ================================================================
@@ -486,26 +440,23 @@ async function fetchIntraday(symbol, targetDate) {
     yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
   }
   const q2Url = yfUrl.replace('query1.finance.yahoo.com', 'query2.finance.yahoo.com');
-  const candidates = [
-    yfUrl, q2Url,
-    'https://api.allorigins.win/raw?url='      + encodeURIComponent(yfUrl),
-    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(yfUrl),
-    'https://thingproxy.freeboard.io/fetch/'   + yfUrl,
-  ];
+  const ctrl  = new AbortController();
+  const tid   = setTimeout(() => ctrl.abort(), 8000);
 
-  let json = null;
-  for (const url of candidates) {
-    const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 8000);
-    try {
-      const res  = await fetch(url, { signal: ctrl.signal });
-      if (!res.ok) { clearTimeout(tid); continue; }
-      const d = await res.json();
-      clearTimeout(tid);
-      if (d?.chart?.result?.[0]?.timestamp?.length > 50) { json = d; break; }
-    } catch (_) { clearTimeout(tid); }
+  let json;
+  try {
+    json = await Promise.any(
+      [yfUrl, q2Url, ...OHLC_PROX.map(fn => fn(yfUrl))].map(url =>
+        fetch(url, { signal: ctrl.signal })
+          .then(res => { if (!res.ok) throw 0; return res.json(); })
+          .then(d   => { if (!(d?.chart?.result?.[0]?.timestamp?.length > 50)) throw 0; return d; })
+      )
+    );
+    clearTimeout(tid); ctrl.abort();
+  } catch (_) {
+    clearTimeout(tid);
+    return null; // 失敗時は合成データにフォールバック
   }
-  if (!json) return null; // 失敗時は合成データにフォールバック
 
   const result = json.chart.result[0];
   const q  = result.indicators.quote[0];
