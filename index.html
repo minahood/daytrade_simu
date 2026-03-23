@@ -89,6 +89,8 @@ canvas{display:block;width:100%;height:280px}
 <div class="header">
   <h1>📈 デイトレードシミュレーター</h1>
   <div class="api-row">
+    <label>日付指定（空白=最新）:</label>
+    <input type="date" id="dateInput" />
     <button class="btn-load" id="btnLoad" onclick="loadData()">データ読込</button>
   </div>
 </div>
@@ -267,8 +269,19 @@ function fmtPrice(v) {
 // ================================================================
 // YAHOO FINANCE FETCH (無料・APIキー不要)
 // ================================================================
-async function fetchYahoo(symbol) {
-  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1mo`;
+async function fetchYahoo(symbol, targetDate = '') {
+  let query;
+  if (targetDate) {
+    // 指定日の前後を含む範囲で取得（prevClose確保のため10日前から）
+    const t = new Date(targetDate).getTime();
+    const period1 = Math.floor((t - 14 * 86400000) / 1000);
+    const period2 = Math.floor((t +  3 * 86400000) / 1000);
+    query = `interval=1d&period1=${period1}&period2=${period2}`;
+  } else {
+    query = 'interval=1d&range=1mo';
+  }
+
+  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${query}`;
   const url   = 'https://corsproxy.io/?' + encodeURIComponent(yfUrl);
   const res   = await fetch(url);
   const json  = await res.json();
@@ -282,10 +295,24 @@ async function fetchYahoo(symbol) {
   const q  = result.indicators.quote[0];
   const ts = result.timestamp;
 
-  // OHLCが全て揃っている最新の取引日を末尾から探す
-  let last = ts.length - 1;
-  while (last > 0 && (q.open[last] == null || q.close[last] == null)) last--;
-  if (q.open[last] == null) throw new Error(`${symbol}: 有効なOHLCデータが見つかりません`);
+  let last;
+  if (targetDate) {
+    // 指定日に一致するエントリを末尾から探す（UTC/JST両方で照合）
+    last = -1;
+    for (let i = ts.length - 1; i >= 0; i--) {
+      const dUtc = new Date(ts[i] * 1000).toISOString().slice(0, 10);
+      const dJst = new Date((ts[i] + 9 * 3600) * 1000).toISOString().slice(0, 10);
+      if ((dUtc === targetDate || dJst === targetDate) && q.open[i] != null) {
+        last = i; break;
+      }
+    }
+    if (last === -1) throw new Error(`${targetDate} は東証非取引日です（土日・祝日・年末年始など）`);
+  } else {
+    // OHLCが揃っている最新の取引日を末尾から探す
+    last = ts.length - 1;
+    while (last > 0 && (q.open[last] == null || q.close[last] == null)) last--;
+    if (q.open[last] == null) throw new Error(`${symbol}: 有効なOHLCデータが見つかりません`);
+  }
 
   const ohlc = {
     open:  q.open[last],
@@ -294,7 +321,7 @@ async function fetchYahoo(symbol) {
     close: q.close[last],
   };
   const prevClose = (last > 0 ? q.close[last - 1] : null) ?? result.meta.previousClose;
-  const date = new Date(ts[last] * 1000).toISOString().slice(0, 10);
+  const date = new Date((ts[last] + 9 * 3600) * 1000).toISOString().slice(0, 10);
   return { ohlc, prevClose, date };
 }
 
@@ -393,10 +420,13 @@ async function loadData() {
   st.stockName   = stock.name;
 
   try {
+    // 日付指定（空白なら最新）
+    const targetDate = document.getElementById('dateInput').value; // "YYYY-MM-DD" or ""
+
     // 株・日経を Yahoo Finance から並列取得
     const [sResult, nResult] = await Promise.allSettled([
-      fetchYahoo(stock.symbol),
-      fetchYahoo('^N225'),
+      fetchYahoo(stock.symbol, targetDate),
+      fetchYahoo('^N225', targetDate),
     ]);
 
     if (sResult.status === 'rejected') throw new Error(sResult.reason.message);
@@ -768,6 +798,9 @@ window.addEventListener('resize', () => { if (st.dataLoaded) redrawAll(); });
     ctx.fillStyle = '#8b949e'; ctx.font='13px sans-serif'; ctx.textAlign='center';
     ctx.fillText('データ読込ボタンを押してください', (c.clientWidth||600)/2, 140);
   });
+
+  // 日付ピッカーの上限を今日に設定
+  document.getElementById('dateInput').max = new Date().toISOString().slice(0, 10);
 })();
 </script>
 </body>
