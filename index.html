@@ -268,27 +268,32 @@ function fmtPrice(v) {
 // YAHOO FINANCE FETCH (無料・APIキー不要)
 // ================================================================
 async function fetchYahoo(symbol) {
-  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
+  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1mo`;
   const url   = 'https://corsproxy.io/?' + encodeURIComponent(yfUrl);
   const res   = await fetch(url);
   const json  = await res.json();
 
   const result = json?.chart?.result?.[0];
   if (!result) {
-    const err = json?.chart?.error?.description || 'データなし';
+    const err = json?.chart?.error?.description || JSON.stringify(json).slice(0, 120);
     throw new Error(`${symbol}: ${err}`);
   }
 
-  const q    = result.indicators.quote[0];
-  const ts   = result.timestamp;
-  const last = ts.length - 1;
+  const q  = result.indicators.quote[0];
+  const ts = result.timestamp;
+
+  // OHLCが全て揃っている最新の取引日を末尾から探す
+  let last = ts.length - 1;
+  while (last > 0 && (q.open[last] == null || q.close[last] == null)) last--;
+  if (q.open[last] == null) throw new Error(`${symbol}: 有効なOHLCデータが見つかりません`);
+
   const ohlc = {
     open:  q.open[last],
     high:  q.high[last],
     low:   q.low[last],
     close: q.close[last],
   };
-  const prevClose = q.close[last - 1] ?? result.meta.previousClose;
+  const prevClose = (last > 0 ? q.close[last - 1] : null) ?? result.meta.previousClose;
   const date = new Date(ts[last] * 1000).toISOString().slice(0, 10);
   return { ohlc, prevClose, date };
 }
