@@ -80,6 +80,11 @@ canvas{display:block;width:100%;height:280px}
 .trade-log td{padding:4px 8px;border-bottom:1px solid #21262d}
 .long-tag{color:#3fb950}.short-tag{color:#f85149}
 
+/* ── Proxy badge ── */
+.proxy-badge{font-size:11px;padding:3px 9px;border-radius:10px;font-weight:600;white-space:nowrap}
+.proxy-badge.local{background:#0d3a1a;color:#3fb950;border:1px solid #238636}
+.proxy-badge.public{background:#2d2000;color:#d29922;border:1px solid #9a6700}
+
 /* ── Responsive ── */
 @media(max-width:700px){
   .charts-wrap,.bottom{grid-template-columns:1fr}
@@ -90,6 +95,7 @@ canvas{display:block;width:100%;height:280px}
 
 <div class="header">
   <h1>📈 デイトレードシミュレーター</h1>
+  <span id="proxyBadge" class="proxy-badge public">■ 公開プロキシ使用中</span>
   <div class="api-row">
     <label>日付指定（空白=最新）:</label>
     <input type="date" id="dateInput" />
@@ -293,7 +299,31 @@ function ohlcCacheSet(symbol, targetDate, data) {
 // OHLC 取得（Yahoo Finance + stooq を並列レース、最速ソースを採用）
 // ================================================================
 
-// プロキシ変換関数リスト（Yahoo/stooq 共用）
+// ローカルプロキシ（server.py が起動中の場合のみ有効）
+let LOCAL_PROXY_URL = null; // 'http://localhost:8765/proxy?url=' or null
+
+async function detectLocalProxy() {
+  try {
+    const res = await fetch('http://localhost:8765/health',
+      { signal: AbortSignal.timeout(400) });
+    if (res.ok) LOCAL_PROXY_URL = 'http://localhost:8765/proxy?url=';
+  } catch (_) { LOCAL_PROXY_URL = null; }
+  updateProxyBadge();
+}
+
+function updateProxyBadge() {
+  const el = document.getElementById('proxyBadge');
+  if (!el) return;
+  if (LOCAL_PROXY_URL) {
+    el.className = 'proxy-badge local';
+    el.textContent = '■ ローカルプロキシ稼働中';
+  } else {
+    el.className = 'proxy-badge public';
+    el.textContent = '■ 公開プロキシ使用中';
+  }
+}
+
+// 公開 CORS プロキシ変換関数リスト（Yahoo/stooq 共用）
 const OHLC_PROX = [
   u => 'https://api.allorigins.win/raw?url='      + encodeURIComponent(u),
   u => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u),
@@ -380,11 +410,15 @@ async function fetchYahoo(symbol, targetDate = '') {
       .then(res => { if (!res.ok) throw 0; return res.text(); })
       .then(t   => { if (!t.startsWith('Date,')) throw 0; return parseStooqCsv(t, symbol, targetDate); });
 
+  const localProxies = LOCAL_PROXY_URL
+    ? [u => LOCAL_PROXY_URL + encodeURIComponent(u)]
+    : [];
+
   try {
     const r = await Promise.any([
+      ...[...localProxies, ...OHLC_PROX].map(fn => tryY(fn(yfUrl))), // Yahoo 経由（ローカル優先）
       tryY(yfUrl), tryY(q2Url),               // Yahoo 直接（CORS通る環境のみ有効）
-      ...OHLC_PROX.map(fn => tryY(fn(yfUrl))), // Yahoo 経由プロキシ
-      ...OHLC_PROX.map(fn => tryS(fn(stooqUrl))), // stooq 経由プロキシ（同時並走）
+      ...[...localProxies, ...OHLC_PROX].map(fn => tryS(fn(stooqUrl))), // stooq 経由（ローカル優先）
     ]);
     clearTimeout(tid); ctrl.abort();
     ohlcCacheSet(symbol, targetDate, r);
@@ -443,14 +477,20 @@ async function fetchIntraday(symbol, targetDate) {
   const ctrl  = new AbortController();
   const tid   = setTimeout(() => ctrl.abort(), 8000);
 
+  const localProxiesI = LOCAL_PROXY_URL
+    ? [u => LOCAL_PROXY_URL + encodeURIComponent(u)]
+    : [];
+
   let json;
   try {
     json = await Promise.any(
-      [yfUrl, q2Url, ...OHLC_PROX.map(fn => fn(yfUrl))].map(url =>
-        fetch(url, { signal: ctrl.signal })
-          .then(res => { if (!res.ok) throw 0; return res.json(); })
-          .then(d   => { if (!(d?.chart?.result?.[0]?.timestamp?.length > 50)) throw 0; return d; })
-      )
+      [...localProxiesI, ...OHLC_PROX].map(fn => fn(yfUrl))
+        .concat([yfUrl, q2Url])
+        .map(url =>
+          fetch(url, { signal: ctrl.signal })
+            .then(res => { if (!res.ok) throw 0; return res.json(); })
+            .then(d   => { if (!(d?.chart?.result?.[0]?.timestamp?.length > 50)) throw 0; return d; })
+        )
     );
     clearTimeout(tid); ctrl.abort();
   } catch (_) {
@@ -983,6 +1023,9 @@ window.addEventListener('resize', () => { if (st.dataLoaded) redrawAll(); });
 
   // 日付ピッカーの上限を今日に設定
   document.getElementById('dateInput').max = new Date().toISOString().slice(0, 10);
+
+  // ローカルプロキシの検出（非同期、バックグラウンドで実行）
+  detectLocalProxy();
 })();
 </script>
 </body>
