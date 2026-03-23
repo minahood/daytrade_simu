@@ -442,6 +442,102 @@ async function fetchStooq(symbol, targetDate) {
 }
 
 // ================================================================
+// 1分足リアルデータ取得
+// ================================================================
+function intradayCacheGet(symbol, targetDate) {
+  try {
+    const key = `intra_${symbol}_${targetDate || 'latest'}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const { data, savedAt, ttl } = JSON.parse(raw);
+    if (Date.now() - savedAt > ttl) { localStorage.removeItem(key); return null; }
+    return data;
+  } catch(_) { return null; }
+}
+function intradayCacheSet(symbol, targetDate, data) {
+  try {
+    const key = `intra_${symbol}_${targetDate || 'latest'}`;
+    const ttl = targetDate ? 15 * 86400000 : 24 * 3600000; // 指定日15日, 最新24時間
+    localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now(), ttl }));
+  } catch(_) {}
+}
+
+// UnixタイムスタンプをJST分足スロット(0-329)に変換
+function tsToSlot(unixTs) {
+  const jstSec   = unixTs + 9 * 3600;
+  const minOfDay = Math.floor(jstSec / 60) % 1440;
+  if (minOfDay >= 540 && minOfDay < 690) return minOfDay - 540;       // 前場
+  if (minOfDay >= 750 && minOfDay < 930) return 150 + (minOfDay - 750); // 後場
+  return -1;
+}
+
+async function fetchIntraday(symbol, targetDate) {
+  const cached = intradayCacheGet(symbol, targetDate);
+  if (cached) return cached;
+
+  let yfUrl;
+  if (targetDate) {
+    // targetDate は YYYY-MM-DD (UTC 00:00 = JST 09:00 = 前場開始)
+    const t = new Date(targetDate).getTime();
+    const period1 = Math.floor(t / 1000);
+    const period2 = Math.floor((t + 7 * 3600000) / 1000); // 07:00 UTC = 16:00 JST
+    yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&period1=${period1}&period2=${period2}`;
+  } else {
+    yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
+  }
+  const q2Url = yfUrl.replace('query1.finance.yahoo.com', 'query2.finance.yahoo.com');
+  const candidates = [
+    yfUrl, q2Url,
+    'https://api.allorigins.win/raw?url='      + encodeURIComponent(yfUrl),
+    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(yfUrl),
+    'https://thingproxy.freeboard.io/fetch/'   + yfUrl,
+  ];
+
+  let json = null;
+  for (const url of candidates) {
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res  = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) { clearTimeout(tid); continue; }
+      const d = await res.json();
+      clearTimeout(tid);
+      if (d?.chart?.result?.[0]?.timestamp?.length > 50) { json = d; break; }
+    } catch (_) { clearTimeout(tid); }
+  }
+  if (!json) return null; // 失敗時は合成データにフォールバック
+
+  const result = json.chart.result[0];
+  const q  = result.indicators.quote[0];
+  const ts = result.timestamp;
+
+  // 330スロットに値をマッピング
+  const slots = new Array(330).fill(null);
+  for (let i = 0; i < ts.length; i++) {
+    const price = q.close[i] ?? q.open[i];
+    if (price == null) continue;
+    const slot = tsToSlot(ts[i]);
+    if (slot >= 0) slots[slot] = price;
+  }
+
+  // データが少なすぎる場合は合成にフォールバック
+  const filled = slots.filter(x => x !== null).length;
+  if (filled < 120) return null;
+
+  // 前後補間でギャップを埋める
+  for (let i = 1; i < 330; i++) {
+    if (slots[i] == null && slots[i-1] != null) slots[i] = slots[i-1];
+  }
+  for (let i = 328; i >= 0; i--) {
+    if (slots[i] == null && slots[i+1] != null) slots[i] = slots[i+1];
+  }
+
+  const data = slots.map((price, i) => ({ minute: idxToMin(i), price: price || 0 }));
+  intradayCacheSet(symbol, targetDate, data);
+  return data;
+}
+
+// ================================================================
 // GENERATE SYNTHETIC 1-MIN DATA FROM DAILY OHLC
 // ================================================================
 function generateIntraday(open, high, low, close) {
@@ -565,20 +661,32 @@ async function loadData() {
       nDate      = '合成';
     }
 
-    st.nikkeiData      = generateIntraday(nOHLC.open, nOHLC.high, nOHLC.low, nOHLC.close);
     st.prevCloseNikkei = nPrevClose;
-    st.stockData       = generateIntraday(sRes.ohlc.open, sRes.ohlc.high, sRes.ohlc.low, sRes.ohlc.close);
     st.prevCloseStock  = sRes.prevClose;
+
+    // 実際の1分足データ取得（失敗時はOHLCから合成）
+    setStatus('分足データ取得中…');
+    const [sIntra, nIntra] = await Promise.allSettled([
+      fetchIntraday(stock.symbol, targetDate),
+      fetchIntraday('^N225', targetDate),
+    ]);
+    const sIntraData = sIntra.status === 'fulfilled' ? sIntra.value : null;
+    const nIntraData = nIntra.status === 'fulfilled' ? nIntra.value : null;
+
+    st.stockData  = sIntraData || generateIntraday(sRes.ohlc.open, sRes.ohlc.high, sRes.ohlc.low, sRes.ohlc.close);
+    st.nikkeiData = nIntraData || generateIntraday(nOHLC.open, nOHLC.high, nOHLC.low, nOHLC.close);
     st.dataLoaded = true;
 
-    const srcName = s => s === 'yahoo' ? 'Yahoo Finance' : s === 'stooq' ? 'stooq.com' : 'キャッシュ';
-    const nSrc  = nResult.status === 'fulfilled' ? srcName(nResult.value.source) : '合成';
-    const sSrc  = srcName(sRes.source);
+    const srcName   = s => s === 'yahoo' ? 'Yahoo Finance' : s === 'stooq' ? 'stooq.com' : 'キャッシュ';
+    const nSrc      = nResult.status === 'fulfilled' ? srcName(nResult.value.source) : '合成';
+    const sSrc      = srcName(sRes.source);
+    const sIntraLbl = sIntraData ? '実データ' : 'シミュ';
+    const nIntraLbl = nIntraData ? '実データ' : 'シミュ';
 
     document.getElementById('nikkeiLabel').textContent =
-      `日経225 [${nSrc}] — ${nDate}`;
+      `日経225 [${nSrc}・${nIntraLbl}] — ${nDate}`;
     document.getElementById('stockLabel').textContent =
-      `${stock.name} (${stock.symbol}) [${sSrc}] — ${sRes.date}`;
+      `${stock.name} (${stock.symbol}) [${sSrc}・${sIntraLbl}] — ${sRes.date}`;
     document.getElementById('stockName').textContent =
       `${stock.name} (${stock.symbol})`;
 
@@ -586,7 +694,7 @@ async function loadData() {
       document.getElementById(id).disabled = false);
 
     resetSim(true);
-    setStatus(`読込完了 ✓  ${stock.name} ${sRes.date} [${sSrc}] / 日経 ${nDate} [${nSrc}]`);
+    setStatus(`読込完了 ✓  ${stock.name} ${sRes.date} [${sSrc}・${sIntraLbl}] / 日経 ${nDate} [${nSrc}・${nIntraLbl}]`);
   } catch(e) {
     setStatus('エラー: ' + e.message);
     alert('データ取得エラー:\n' + e.message);
