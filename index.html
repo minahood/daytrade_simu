@@ -306,7 +306,7 @@ async function fetchYahoo(symbol, targetDate = '') {
       if (data?.chart?.result?.[0]) { json = data; break; }
     } catch (_) { clearTimeout(tid); }
   }
-  if (!json) throw new Error(`${symbol}: 全ソースからデータを取得できませんでした`);
+  if (!json) return await fetchStooq(symbol, targetDate);
 
   const result = json?.chart?.result?.[0];
   if (!result) {
@@ -345,6 +345,69 @@ async function fetchYahoo(symbol, targetDate = '') {
   const prevClose = (last > 0 ? q.close[last - 1] : null) ?? result.meta.previousClose;
   const date = new Date((ts[last] + 9 * 3600) * 1000).toISOString().slice(0, 10);
   return { ohlc, prevClose, date };
+}
+
+// ================================================================
+// STOOQ FALLBACK (Yahoo Finance rate-limit 時の代替ソース)
+// ================================================================
+async function fetchStooq(symbol, targetDate) {
+  // シンボル変換: 9984.T → 9984.jp, ^N225 → ^nky
+  const s = /^\^N225$/i.test(symbol) ? '^nky'
+           : symbol.replace(/\.T$/i, '.jp');
+
+  // prevClose 確保のため 20 日前から取得
+  const endStr  = targetDate || new Date().toISOString().slice(0, 10);
+  const startMs = new Date(endStr).getTime() - 20 * 86400000;
+  const d1 = new Date(startMs).toISOString().slice(0, 10).replace(/-/g, '');
+  const d2 = endStr.replace(/-/g, '');
+
+  const stooqUrl = `https://stooq.com/q/d/l/?s=${encodeURIComponent(s)}&i=d&d1=${d1}&d2=${d2}`;
+  const candidates = [
+    'https://api.allorigins.win/raw?url='      + encodeURIComponent(stooqUrl),
+    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(stooqUrl),
+    'https://thingproxy.freeboard.io/fetch/'   + stooqUrl,
+  ];
+
+  let csv = null;
+  for (const url of candidates) {
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res  = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(tid);
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (text.startsWith('Date,')) { csv = text; break; }
+    } catch (_) { clearTimeout(tid); }
+  }
+  if (!csv) throw new Error(`${symbol}: 全ソースからデータを取得できませんでした`);
+
+  // CSV パース（Date,Open,High,Low,Close,Volume）日付昇順にソート
+  const rows = csv.trim().split('\n').slice(1)
+    .map(line => {
+      const [date, open, high, low, close] = line.split(',');
+      return { date, open: +open, high: +high, low: +low, close: +close };
+    })
+    .filter(r => r.open && r.close)
+    .sort((a, b) => a.date < b.date ? -1 : 1);
+
+  if (!rows.length) throw new Error(`${symbol}: stooqからデータが取得できません`);
+
+  let last;
+  if (targetDate) {
+    last = rows.findLastIndex(r => r.date === targetDate);
+    if (last === -1) throw new Error(`${targetDate} は東証非取引日です（土日・祝日・年末年始など）`);
+  } else {
+    last = rows.length - 1;
+  }
+
+  const row       = rows[last];
+  const prevClose = last > 0 ? rows[last - 1].close : null;
+  return {
+    ohlc: { open: row.open, high: row.high, low: row.low, close: row.close },
+    prevClose,
+    date: row.date,
+  };
 }
 
 // ================================================================
