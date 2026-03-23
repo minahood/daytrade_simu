@@ -399,22 +399,33 @@ async function loadData() {
   st.stockName   = stock.name;
 
   try {
-    // Nikkei: 1321.T (日経225ETF) × 10、銘柄: TIME_SERIES_DAILY で取得 → 1分足を合成
-    // 無料APIは1秒1リクエスト制限のため逐次実行
-    setStatus('データ取得中… 1/2 (日経)');
-    const nRes = await fetchDaily('1321.T', 10);
-    setStatus('データ取得中… 2/2 (銘柄) — 少々お待ちください');
-    await new Promise(r => setTimeout(r, 1500));
+    // 株のみAPIフェッチ（1リクエスト）、日経は株との相関から合成
+    setStatus('データ取得中…');
     const sRes = await fetchDaily(stock.symbol, 1);
 
-    st.nikkeiData      = generateIntraday(nRes.ohlc.open, nRes.ohlc.high, nRes.ohlc.low, nRes.ohlc.close);
-    st.prevCloseNikkei = nRes.prevClose;
+    // 日経OHLCを株の騰落率から相関合成（API不使用）
+    const NIKKEI_BASE  = 38500;
+    const NIKKEI_RANGE = 400;
+    const sPct = (sRes.ohlc.close - sRes.ohlc.open) / sRes.ohlc.open;
+    const corr  = 0.6 + Math.random() * 0.3;
+    const nPct  = sPct * corr + (Math.random() - 0.5) * 0.006;
+    const nOpen  = NIKKEI_BASE + (Math.random() - 0.5) * NIKKEI_RANGE * 0.5;
+    const nClose = nOpen * (1 + nPct);
+    const swing  = Math.abs(nPct) * nOpen * 0.5 + Math.random() * NIKKEI_RANGE * 0.3;
+    const nOHLC  = {
+      open:  nOpen,  close: nClose,
+      high:  Math.max(nOpen, nClose) + swing,
+      low:   Math.min(nOpen, nClose) - swing,
+    };
+
+    st.nikkeiData      = generateIntraday(nOHLC.open, nOHLC.high, nOHLC.low, nOHLC.close);
+    st.prevCloseNikkei = nOpen * (1 - (Math.random() - 0.5) * 0.008);
     st.stockData       = generateIntraday(sRes.ohlc.open, sRes.ohlc.high, sRes.ohlc.low, sRes.ohlc.close);
     st.prevCloseStock  = sRes.prevClose;
     st.dataLoaded = true;
 
     document.getElementById('nikkeiLabel').textContent =
-      `日経225参考チャート (1321.T × 10) — ${nRes.date}`;
+      `日経225参考チャート（合成） — ${sRes.date}`;
     document.getElementById('stockLabel').textContent =
       `${stock.name} (${stock.symbol}) — ${sRes.date}`;
     document.getElementById('stockName').textContent =
@@ -425,7 +436,7 @@ async function loadData() {
       document.getElementById(id).disabled = false);
 
     resetSim(true);
-    setStatus(`読込完了 ✓  日経 ${nRes.date} / ${stock.name} ${sRes.date}（1分足はシミュレーション生成）`);
+    setStatus(`読込完了 ✓  ${stock.name} ${sRes.date}（日経は相関合成）`);
   } catch(e) {
     setStatus('エラー: ' + e.message);
     alert('データ取得エラー:\n' + e.message);
