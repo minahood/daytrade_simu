@@ -268,56 +268,118 @@ function fmtPrice(v) {
 }
 
 // ================================================================
-// API FETCH
+// API FETCH  (TIME_SERIES_DAILY — 無料枠対応)
 // ================================================================
-async function fetchIntraday(symbol, scale=1) {
-  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY` +
-    `&symbol=${encodeURIComponent(symbol)}&interval=1min&outputsize=full&apikey=${st.apiKey}`;
-  const res = await fetch(url);
+async function fetchDaily(symbol, scale = 1) {
+  const url =
+    `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY` +
+    `&symbol=${encodeURIComponent(symbol)}&outputsize=compact&apikey=${st.apiKey}`;
+  const res  = await fetch(url);
   const json = await res.json();
 
-  const series = json['Time Series (1min)'];
+  const series = json['Time Series (Daily)'];
   if (!series) {
-    const msg = json['Note'] || json['Information'] || json['Error Message'] || JSON.stringify(json);
+    const msg = json['Note'] || json['Information'] || json['Error Message'] || JSON.stringify(json).slice(0,200);
     throw new Error(msg);
   }
 
-  // Group by date (key: "YYYY-MM-DD")
-  const byDate = {};
-  Object.entries(series).forEach(([ts, v]) => {
-    const [date, time] = ts.split(' ');
-    if (!byDate[date]) byDate[date] = {};
-    const [hh, mm] = time.split(':').map(Number);
-    const min = hh*60 + mm;
-    // Only store trading-hours data
-    if ((min >= SESSION1_START && min < SESSION1_END) ||
-        (min >= SESSION2_START && min <= SESSION2_END)) {
-      byDate[date][min] = parseFloat(v['4. close']) * scale;
-    }
+  const dates = Object.keys(series).sort().reverse();
+  if (dates.length < 2) throw new Error(`${symbol}: 日次データ不足 (${dates.length}件)`);
+
+  const parseOHLC = (d) => ({
+    open:  parseFloat(series[d]['1. open'])  * scale,
+    high:  parseFloat(series[d]['2. high'])  * scale,
+    low:   parseFloat(series[d]['3. low'])   * scale,
+    close: parseFloat(series[d]['4. close']) * scale,
   });
 
-  // Pick most recent date that has opening data
-  const dates = Object.keys(byDate).sort().reverse();
-  for (const d of dates) {
-    const md = byDate[d];
-    const keys = Object.keys(md).map(Number);
-    if (keys.length < 30) continue; // sparse – skip
-    const openMin = Math.min(...keys);
-    let last = md[openMin];
+  return {
+    ohlc:      parseOHLC(dates[0]),
+    prevClose: parseFloat(series[dates[1]]['4. close']) * scale,
+    date:      dates[0],
+  };
+}
 
-    // Fill all 330 indices
-    const result = [];
-    for (let i = 0; i < TOTAL_MINS; i++) {
-      const min = idxToMin(i);
-      if (md[min] !== undefined) last = md[min];
-      result.push({minute: min, price: last});
-    }
-
-    // prevClose: use first available price as stand-in
-    const prevClose = md[openMin];
-    return {data: result, prevClose, date: d};
+// ================================================================
+// GENERATE SYNTHETIC 1-MIN DATA FROM DAILY OHLC
+// ================================================================
+function generateIntraday(open, high, low, close) {
+  function gaussRand() {
+    let u=0,v=0;
+    while(u===0)u=Math.random(); while(v===0)v=Math.random();
+    return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
   }
-  throw new Error('有効な取引データが見つかりませんでした（データが不足している可能性があります）');
+  function randInt(lo,hi){return Math.floor(lo+Math.random()*(hi-lo));}
+
+  // Scenario: where in the day do high/low appear?
+  const ZONES={earlyAM:[5,70],lateAM:[70,148],earlyPM:[152,220],latePM:[220,325]};
+  const scenarios=[
+    {w:.30,hZ:'earlyAM',lZ:'latePM'},
+    {w:.25,hZ:'latePM', lZ:'earlyAM'},
+    {w:.25,hZ:'lateAM', lZ:'earlyPM'},
+    {w:.20,hZ:'earlyPM',lZ:'lateAM'},
+  ];
+  let r=Math.random(),cum=0,sc=scenarios[0];
+  for(const s of scenarios){cum+=s.w;if(r<cum){sc=s;break;}}
+
+  let hIdx=randInt(...ZONES[sc.hZ]), lIdx=randInt(...ZONES[sc.lZ]);
+  if(hIdx===lIdx) lIdx=Math.min(lIdx+6,325);
+
+  const wps=[{idx:0,price:open},{idx:hIdx,price:high},{idx:lIdx,price:low},{idx:329,price:close}];
+
+  // 1〜2個の中間ウェイポイントを追加（自然な曲線のため）
+  const range=high-low||1;
+  const nExtra=1+Math.floor(Math.random()*2);
+  for(let e=0;e<nExtra;e++){
+    const sorted=[...wps].sort((a,b)=>a.idx-b.idx);
+    let maxGap=0,gk=0;
+    for(let k=0;k<sorted.length-1;k++){const g=sorted[k+1].idx-sorted[k].idx;if(g>maxGap){maxGap=g;gk=k;}}
+    if(maxGap<10)break;
+    const g0=sorted[gk],g1=sorted[gk+1];
+    const mi=randInt(g0.idx+3,g1.idx-3);
+    const mp=g0.price+(g1.price-g0.price)*((mi-g0.idx)/(g1.idx-g0.idx))+gaussRand()*range*0.12;
+    wps.push({idx:mi,price:mp});
+  }
+  wps.sort((a,b)=>a.idx-b.idx);
+  const NW=wps.length;
+
+  // Catmull-Rom タンジェント計算
+  const tan=new Array(NW);
+  for(let k=0;k<NW;k++){
+    if(k===0)        tan[k]=(wps[1].price-wps[0].price)/(wps[1].idx-wps[0].idx);
+    else if(k===NW-1)tan[k]=(wps[NW-1].price-wps[NW-2].price)/(wps[NW-1].idx-wps[NW-2].idx);
+    else             tan[k]=(wps[k+1].price-wps[k-1].price)/(wps[k+1].idx-wps[k-1].idx);
+  }
+
+  // Cubic Hermite 補間
+  const base=new Float64Array(330);
+  for(let k=0;k<NW-1;k++){
+    const p0=wps[k].price,p1=wps[k+1].price;
+    const i0=wps[k].idx,  i1=wps[k+1].idx;
+    const m0=tan[k],      m1=tan[k+1];
+    const seg=i1-i0;
+    for(let i=i0;i<=i1;i++){
+      const t=(i-i0)/seg,t2=t*t,t3=t2*t;
+      base[i]=(2*t3-3*t2+1)*p0+(t3-2*t2+t)*m0*seg+(-2*t3+3*t2)*p1+(t3-t2)*m1*seg;
+    }
+  }
+
+  // ガウスノイズ + 3点スムージング
+  const noisy=new Float64Array(330);
+  const sig=range*0.008;
+  for(let i=0;i<330;i++) noisy[i]=base[i]+(i===0||i===329?0:gaussRand()*sig);
+  const sm=new Float64Array(330);
+  sm[0]=open; sm[329]=close;
+  for(let i=1;i<=328;i++) sm[i]=.25*noisy[i-1]+.50*noisy[i]+.25*noisy[i+1];
+
+  // クランプ + 端点固定
+  const minP=low*.998, maxP=high*1.002;
+  for(let i=0;i<330;i++) sm[i]=Math.max(minP,Math.min(maxP,sm[i]));
+  sm[0]=open; sm[329]=close;
+
+  const result=[];
+  for(let i=0;i<330;i++) result.push({minute:idxToMin(i), price:sm[i]});
+  return result;
 }
 
 // ================================================================
@@ -337,14 +399,16 @@ async function loadData() {
   st.stockName   = stock.name;
 
   try {
-    // Nikkei: 1321.T (Nikkei225 ETF) × 10 ≈ 日経平均
+    // Nikkei: 1321.T (日経225ETF) × 10、銘柄: TIME_SERIES_DAILY で取得 → 1分足を合成
     const [nRes, sRes] = await Promise.all([
-      fetchIntraday('1321.T', 10),
-      fetchIntraday(stock.symbol, 1),
+      fetchDaily('1321.T', 10),
+      fetchDaily(stock.symbol, 1),
     ]);
 
-    st.nikkeiData = nRes.data; st.prevCloseNikkei = nRes.prevClose;
-    st.stockData  = sRes.data; st.prevCloseStock  = sRes.prevClose;
+    st.nikkeiData      = generateIntraday(nRes.ohlc.open, nRes.ohlc.high, nRes.ohlc.low, nRes.ohlc.close);
+    st.prevCloseNikkei = nRes.prevClose;
+    st.stockData       = generateIntraday(sRes.ohlc.open, sRes.ohlc.high, sRes.ohlc.low, sRes.ohlc.close);
+    st.prevCloseStock  = sRes.prevClose;
     st.dataLoaded = true;
 
     document.getElementById('nikkeiLabel').textContent =
@@ -359,7 +423,7 @@ async function loadData() {
       document.getElementById(id).disabled = false);
 
     resetSim(true);
-    setStatus(`読込完了 ✓  日経 ${nRes.date} / ${stock.name} ${sRes.date}`);
+    setStatus(`読込完了 ✓  日経 ${nRes.date} / ${stock.name} ${sRes.date}（1分足はシミュレーション生成）`);
   } catch(e) {
     setStatus('エラー: ' + e.message);
     alert('データ取得エラー:\n' + e.message);
