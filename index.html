@@ -89,8 +89,6 @@ canvas{display:block;width:100%;height:280px}
 <div class="header">
   <h1>📈 デイトレードシミュレーター</h1>
   <div class="api-row">
-    <label>Alpha Vantage APIキー:</label>
-    <input type="text" id="apiKeyInput" placeholder="例: ABCDEFGHIJKLMNOP" />
     <button class="btn-load" id="btnLoad" onclick="loadData()">データ読込</button>
   </div>
 </div>
@@ -112,7 +110,7 @@ canvas{display:block;width:100%;height:280px}
     <span class="info-label">初期資金</span>
     <span class="info-value">¥10,000,000</span>
   </div>
-  <div id="statusMsg" class="status-msg">APIキーを入力してデータを読み込んでください</div>
+  <div id="statusMsg" class="status-msg">データ読込ボタンを押してください</div>
 </div>
 
 <div class="charts-wrap">
@@ -234,7 +232,6 @@ const PRIME_STOCKS = [
 // STATE
 // ================================================================
 const st = {
-  apiKey: '',
   nikkeiData: [],   // [{minute, price}] × 330
   stockData:  [],   // [{minute, price}] × 330
   stockSymbol: '', stockName: '',
@@ -268,16 +265,19 @@ function fmtPrice(v) {
 }
 
 // ================================================================
-// NIKKEI 225 FETCH (Yahoo Finance 経由、無料・APIキー不要)
+// YAHOO FINANCE FETCH (無料・APIキー不要)
 // ================================================================
-async function fetchNikkeiYahoo() {
-  const yfUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EN225?interval=1d&range=5d';
+async function fetchYahoo(symbol) {
+  const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
   const url   = 'https://corsproxy.io/?' + encodeURIComponent(yfUrl);
   const res   = await fetch(url);
   const json  = await res.json();
 
   const result = json?.chart?.result?.[0];
-  if (!result) throw new Error('Yahoo Finance: データなし');
+  if (!result) {
+    const err = json?.chart?.error?.description || 'データなし';
+    throw new Error(`${symbol}: ${err}`);
+  }
 
   const q    = result.indicators.quote[0];
   const ts   = result.timestamp;
@@ -291,39 +291,6 @@ async function fetchNikkeiYahoo() {
   const prevClose = q.close[last - 1] ?? result.meta.previousClose;
   const date = new Date(ts[last] * 1000).toISOString().slice(0, 10);
   return { ohlc, prevClose, date };
-}
-
-// ================================================================
-// API FETCH  (TIME_SERIES_DAILY — 無料枠対応)
-// ================================================================
-async function fetchDaily(symbol, scale = 1) {
-  const url =
-    `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY` +
-    `&symbol=${encodeURIComponent(symbol)}&outputsize=compact&apikey=${st.apiKey}`;
-  const res  = await fetch(url);
-  const json = await res.json();
-
-  const series = json['Time Series (Daily)'];
-  if (!series) {
-    const msg = json['Note'] || json['Information'] || json['Error Message'] || JSON.stringify(json).slice(0,200);
-    throw new Error(msg);
-  }
-
-  const dates = Object.keys(series).sort().reverse();
-  if (dates.length < 2) throw new Error(`${symbol}: 日次データ不足 (${dates.length}件)`);
-
-  const parseOHLC = (d) => ({
-    open:  parseFloat(series[d]['1. open'])  * scale,
-    high:  parseFloat(series[d]['2. high'])  * scale,
-    low:   parseFloat(series[d]['3. low'])   * scale,
-    close: parseFloat(series[d]['4. close']) * scale,
-  });
-
-  return {
-    ohlc:      parseOHLC(dates[0]),
-    prevClose: parseFloat(series[dates[1]]['4. close']) * scale,
-    date:      dates[0],
-  };
 }
 
 // ================================================================
@@ -412,32 +379,29 @@ function generateIntraday(open, high, low, close) {
 // LOAD DATA
 // ================================================================
 async function loadData() {
-  st.apiKey = document.getElementById('apiKeyInput').value.trim();
-  if (!st.apiKey) { alert('APIキーを入力してください'); return; }
-
   const btn = document.getElementById('btnLoad');
   btn.disabled = true; btn.textContent = '読込中…';
-  setStatus('データ取得中… (2リクエスト)');
+  setStatus('データ取得中…');
 
-  // Pick random stock
   const stock = PRIME_STOCKS[Math.floor(Math.random() * PRIME_STOCKS.length)];
   st.stockSymbol = stock.symbol;
   st.stockName   = stock.name;
 
   try {
-    // 株: Alpha Vantage、日経: Yahoo Finance（失敗時は相関合成）
-    setStatus('データ取得中… 1/2 (銘柄)');
-    const sRes = await fetchDaily(stock.symbol, 1);
+    // 株・日経を Yahoo Finance から並列取得
+    const [sResult, nResult] = await Promise.allSettled([
+      fetchYahoo(stock.symbol),
+      fetchYahoo('^N225'),
+    ]);
 
-    setStatus('データ取得中… 2/2 (日経225)');
+    if (sResult.status === 'rejected') throw new Error(sResult.reason.message);
+    const sRes = sResult.value;
+
+    // 日経: 失敗時は株の騰落率から相関合成
     let nOHLC, nPrevClose, nDate;
-    try {
-      const nRes = await fetchNikkeiYahoo();
-      nOHLC      = nRes.ohlc;
-      nPrevClose = nRes.prevClose;
-      nDate      = nRes.date;
-    } catch (_) {
-      // フォールバック: 株の騰落率から相関合成
+    if (nResult.status === 'fulfilled') {
+      nOHLC = nResult.value.ohlc; nPrevClose = nResult.value.prevClose; nDate = nResult.value.date;
+    } else {
       const NIKKEI_BASE = 38500, NIKKEI_RANGE = 400;
       const sPct  = (sRes.ohlc.close - sRes.ohlc.open) / sRes.ohlc.open;
       const nPct  = sPct * (0.6 + Math.random() * 0.3) + (Math.random() - 0.5) * 0.006;
@@ -463,7 +427,6 @@ async function loadData() {
     document.getElementById('stockName').textContent =
       `${stock.name} (${stock.symbol})`;
 
-    // Enable controls
     ['btnStart','btnFast','btnReset','btnBuy','btnSell'].forEach(id =>
       document.getElementById(id).disabled = false);
 
@@ -798,7 +761,7 @@ window.addEventListener('resize', () => { if (st.dataLoaded) redrawAll(); });
     ctx.scale(window.devicePixelRatio||1, window.devicePixelRatio||1);
     ctx.fillStyle = '#0d1117'; ctx.fillRect(0,0,c.width,c.height);
     ctx.fillStyle = '#8b949e'; ctx.font='13px sans-serif'; ctx.textAlign='center';
-    ctx.fillText('APIキーを入力してデータを読み込んでください', (c.clientWidth||600)/2, 140);
+    ctx.fillText('データ読込ボタンを押してください', (c.clientWidth||600)/2, 140);
   });
 })();
 </script>
