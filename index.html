@@ -269,9 +269,33 @@ function fmtPrice(v) {
 }
 
 // ================================================================
+// OHLC CACHE (localStorage — 2回目以降のネットワーク不要化)
+// ================================================================
+function ohlcCacheGet(symbol, targetDate) {
+  try {
+    const key = `ohlc_${symbol}_${targetDate || 'latest'}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const { data, savedAt, ttl } = JSON.parse(raw);
+    if (Date.now() - savedAt > ttl) { localStorage.removeItem(key); return null; }
+    return { ...data, source: 'cache' };
+  } catch(_) { return null; }
+}
+function ohlcCacheSet(symbol, targetDate, data) {
+  try {
+    const key = `ohlc_${symbol}_${targetDate || 'latest'}`;
+    const ttl = targetDate ? 7 * 86400000 : 24 * 3600000; // 指定日7日, 最新24時間
+    localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now(), ttl }));
+  } catch(_) {}
+}
+
+// ================================================================
 // YAHOO FINANCE FETCH (無料・APIキー不要)
 // ================================================================
 async function fetchYahoo(symbol, targetDate = '') {
+  const cached = ohlcCacheGet(symbol, targetDate);
+  if (cached) return cached;
+
   let query;
   if (targetDate) {
     // 指定日の前後を含む範囲で取得（prevClose確保のため10日前から）
@@ -306,7 +330,11 @@ async function fetchYahoo(symbol, targetDate = '') {
       if (data?.chart?.result?.[0]) { json = data; break; }
     } catch (_) { clearTimeout(tid); }
   }
-  if (!json) return await fetchStooq(symbol, targetDate);
+  if (!json) {
+    const r = await fetchStooq(symbol, targetDate);
+    ohlcCacheSet(symbol, targetDate, r);
+    return r;
+  }
 
   const result = json?.chart?.result?.[0];
   if (!result) {
@@ -344,7 +372,9 @@ async function fetchYahoo(symbol, targetDate = '') {
   };
   const prevClose = (last > 0 ? q.close[last - 1] : null) ?? result.meta.previousClose;
   const date = new Date((ts[last] + 9 * 3600) * 1000).toISOString().slice(0, 10);
-  return { ohlc, prevClose, date };
+  const r = { ohlc, prevClose, date, source: 'yahoo' };
+  ohlcCacheSet(symbol, targetDate, r);
+  return r;
 }
 
 // ================================================================
@@ -407,6 +437,7 @@ async function fetchStooq(symbol, targetDate) {
     ohlc: { open: row.open, high: row.high, low: row.low, close: row.close },
     prevClose,
     date: row.date,
+    source: 'stooq',
   };
 }
 
@@ -540,10 +571,14 @@ async function loadData() {
     st.prevCloseStock  = sRes.prevClose;
     st.dataLoaded = true;
 
+    const srcName = s => s === 'yahoo' ? 'Yahoo Finance' : s === 'stooq' ? 'stooq.com' : 'キャッシュ';
+    const nSrc  = nResult.status === 'fulfilled' ? srcName(nResult.value.source) : '合成';
+    const sSrc  = srcName(sRes.source);
+
     document.getElementById('nikkeiLabel').textContent =
-      `日経225 (Yahoo Finance) — ${nDate}`;
+      `日経225 [${nSrc}] — ${nDate}`;
     document.getElementById('stockLabel').textContent =
-      `${stock.name} (${stock.symbol}) — ${sRes.date}`;
+      `${stock.name} (${stock.symbol}) [${sSrc}] — ${sRes.date}`;
     document.getElementById('stockName').textContent =
       `${stock.name} (${stock.symbol})`;
 
@@ -551,7 +586,7 @@ async function loadData() {
       document.getElementById(id).disabled = false);
 
     resetSim(true);
-    setStatus(`読込完了 ✓  ${stock.name} ${sRes.date} / 日経 ${nDate}`);
+    setStatus(`読込完了 ✓  ${stock.name} ${sRes.date} [${sSrc}] / 日経 ${nDate} [${nSrc}]`);
   } catch(e) {
     setStatus('エラー: ' + e.message);
     alert('データ取得エラー:\n' + e.message);
