@@ -668,10 +668,13 @@ async function loadData() {
     setStatus('分足データ取得中…');
     const [sIntra, nIntra] = await Promise.allSettled([
       fetchIntraday(stock.symbol, targetDate),
-      fetchIntraday('^N225', targetDate),
+      fetchIntraday('1321.T', targetDate),  // ^N225 インデックスは取得困難 → ETF で代替
     ]);
     const sIntraData = sIntra.status === 'fulfilled' ? sIntra.value : null;
-    const nIntraData = nIntra.status === 'fulfilled' ? nIntra.value : null;
+    // 1321.T は日経225の 1/10 水準で取引されるため × 10 でインデックス水準に換算
+    const nIntraData = (nIntra.status === 'fulfilled' && nIntra.value)
+      ? nIntra.value.map(d => ({ ...d, price: Math.round(d.price * 10) }))
+      : null;
 
     st.stockData  = sIntraData || generateIntraday(sRes.ohlc.open, sRes.ohlc.high, sRes.ohlc.low, sRes.ohlc.close);
     st.nikkeiData = nIntraData || generateIntraday(nOHLC.open, nOHLC.high, nOHLC.low, nOHLC.close);
