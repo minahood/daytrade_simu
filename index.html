@@ -400,10 +400,12 @@ async function loadData() {
 
   try {
     // Nikkei: 1321.T (日経225ETF) × 10、銘柄: TIME_SERIES_DAILY で取得 → 1分足を合成
-    const [nRes, sRes] = await Promise.all([
-      fetchDaily('1321.T', 10),
-      fetchDaily(stock.symbol, 1),
-    ]);
+    // 無料APIは1秒1リクエスト制限のため逐次実行
+    setStatus('データ取得中… 1/2 (日経)');
+    const nRes = await fetchDaily('1321.T', 10);
+    setStatus('データ取得中… 2/2 (銘柄) — 少々お待ちください');
+    await new Promise(r => setTimeout(r, 1500));
+    const sRes = await fetchDaily(stock.symbol, 1);
 
     st.nikkeiData      = generateIntraday(nRes.ohlc.open, nRes.ohlc.high, nRes.ohlc.low, nRes.ohlc.close);
     st.prevCloseNikkei = nRes.prevClose;
