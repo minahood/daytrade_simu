@@ -268,6 +268,32 @@ function fmtPrice(v) {
 }
 
 // ================================================================
+// NIKKEI 225 FETCH (Yahoo Finance 経由、無料・APIキー不要)
+// ================================================================
+async function fetchNikkeiYahoo() {
+  const yfUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EN225?interval=1d&range=5d';
+  const url   = 'https://corsproxy.io/?' + encodeURIComponent(yfUrl);
+  const res   = await fetch(url);
+  const json  = await res.json();
+
+  const result = json?.chart?.result?.[0];
+  if (!result) throw new Error('Yahoo Finance: データなし');
+
+  const q    = result.indicators.quote[0];
+  const ts   = result.timestamp;
+  const last = ts.length - 1;
+  const ohlc = {
+    open:  q.open[last],
+    high:  q.high[last],
+    low:   q.low[last],
+    close: q.close[last],
+  };
+  const prevClose = q.close[last - 1] ?? result.meta.previousClose;
+  const date = new Date(ts[last] * 1000).toISOString().slice(0, 10);
+  return { ohlc, prevClose, date };
+}
+
+// ================================================================
 // API FETCH  (TIME_SERIES_DAILY — 無料枠対応)
 // ================================================================
 async function fetchDaily(symbol, scale = 1) {
@@ -399,33 +425,39 @@ async function loadData() {
   st.stockName   = stock.name;
 
   try {
-    // 株のみAPIフェッチ（1リクエスト）、日経は株との相関から合成
-    setStatus('データ取得中…');
+    // 株: Alpha Vantage、日経: Yahoo Finance（失敗時は相関合成）
+    setStatus('データ取得中… 1/2 (銘柄)');
     const sRes = await fetchDaily(stock.symbol, 1);
 
-    // 日経OHLCを株の騰落率から相関合成（API不使用）
-    const NIKKEI_BASE  = 38500;
-    const NIKKEI_RANGE = 400;
-    const sPct = (sRes.ohlc.close - sRes.ohlc.open) / sRes.ohlc.open;
-    const corr  = 0.6 + Math.random() * 0.3;
-    const nPct  = sPct * corr + (Math.random() - 0.5) * 0.006;
-    const nOpen  = NIKKEI_BASE + (Math.random() - 0.5) * NIKKEI_RANGE * 0.5;
-    const nClose = nOpen * (1 + nPct);
-    const swing  = Math.abs(nPct) * nOpen * 0.5 + Math.random() * NIKKEI_RANGE * 0.3;
-    const nOHLC  = {
-      open:  nOpen,  close: nClose,
-      high:  Math.max(nOpen, nClose) + swing,
-      low:   Math.min(nOpen, nClose) - swing,
-    };
+    setStatus('データ取得中… 2/2 (日経225)');
+    let nOHLC, nPrevClose, nDate;
+    try {
+      const nRes = await fetchNikkeiYahoo();
+      nOHLC      = nRes.ohlc;
+      nPrevClose = nRes.prevClose;
+      nDate      = nRes.date;
+    } catch (_) {
+      // フォールバック: 株の騰落率から相関合成
+      const NIKKEI_BASE = 38500, NIKKEI_RANGE = 400;
+      const sPct  = (sRes.ohlc.close - sRes.ohlc.open) / sRes.ohlc.open;
+      const nPct  = sPct * (0.6 + Math.random() * 0.3) + (Math.random() - 0.5) * 0.006;
+      const nOpen = NIKKEI_BASE + (Math.random() - 0.5) * NIKKEI_RANGE * 0.5;
+      const swing = Math.abs(nPct) * nOpen * 0.5 + Math.random() * NIKKEI_RANGE * 0.3;
+      nOHLC      = { open: nOpen, close: nOpen*(1+nPct),
+                     high: Math.max(nOpen, nOpen*(1+nPct))+swing,
+                     low:  Math.min(nOpen, nOpen*(1+nPct))-swing };
+      nPrevClose = nOpen * (1 - (Math.random()-0.5)*0.008);
+      nDate      = '合成';
+    }
 
     st.nikkeiData      = generateIntraday(nOHLC.open, nOHLC.high, nOHLC.low, nOHLC.close);
-    st.prevCloseNikkei = nOpen * (1 - (Math.random() - 0.5) * 0.008);
+    st.prevCloseNikkei = nPrevClose;
     st.stockData       = generateIntraday(sRes.ohlc.open, sRes.ohlc.high, sRes.ohlc.low, sRes.ohlc.close);
     st.prevCloseStock  = sRes.prevClose;
     st.dataLoaded = true;
 
     document.getElementById('nikkeiLabel').textContent =
-      `日経225参考チャート（合成） — ${sRes.date}`;
+      `日経225 (Yahoo Finance) — ${nDate}`;
     document.getElementById('stockLabel').textContent =
       `${stock.name} (${stock.symbol}) — ${sRes.date}`;
     document.getElementById('stockName').textContent =
@@ -436,7 +468,7 @@ async function loadData() {
       document.getElementById(id).disabled = false);
 
     resetSim(true);
-    setStatus(`読込完了 ✓  ${stock.name} ${sRes.date}（日経は相関合成）`);
+    setStatus(`読込完了 ✓  ${stock.name} ${sRes.date} / 日経 ${nDate}`);
   } catch(e) {
     setStatus('エラー: ' + e.message);
     alert('データ取得エラー:\n' + e.message);
