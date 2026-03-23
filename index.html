@@ -285,20 +285,26 @@ async function fetchYahoo(symbol, targetDate = '') {
 
   const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${query}`;
 
-  // 直接 → allorigins.win → codetabs の順に試す
+  // 直接(query1/query2) → allorigins → codetabs → thingproxy の順に試す
+  const q2Url = yfUrl.replace('query1.finance.yahoo.com', 'query2.finance.yahoo.com');
   const candidates = [
     yfUrl,
-    'https://api.allorigins.win/raw?url='    + encodeURIComponent(yfUrl),
+    q2Url,
+    'https://api.allorigins.win/raw?url='      + encodeURIComponent(yfUrl),
     'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(yfUrl),
+    'https://thingproxy.freeboard.io/fetch/'   + yfUrl,
   ];
   let json;
   for (const url of candidates) {
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 6000);
     try {
-      const res = await fetch(url);
-      if (!res.ok) continue;
+      const res  = await fetch(url, { signal: ctrl.signal });
+      if (!res.ok) { clearTimeout(tid); continue; }
       const data = await res.json();
+      clearTimeout(tid);
       if (data?.chart?.result?.[0]) { json = data; break; }
-    } catch (_) {}
+    } catch (_) { clearTimeout(tid); }
   }
   if (!json) throw new Error(`${symbol}: 全ソースからデータを取得できませんでした`);
 
