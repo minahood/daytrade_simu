@@ -15,6 +15,8 @@ body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',Meiryo,sans-serif;m
 .api-row label{font-size:12px;color:#8b949e;white-space:nowrap}
 .api-row input{background:#21262d;border:1px solid #30363d;color:#e6edf3;padding:5px 10px;border-radius:6px;font-size:12px;width:180px}
 .api-row input:focus{outline:none;border-color:#58a6ff}
+input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(1);opacity:.7;cursor:pointer}
+input[type="date"]::-webkit-calendar-picker-indicator:hover{opacity:1}
 .btn-load{background:#238636;color:#fff;border:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;white-space:nowrap}
 .btn-load:hover{background:#2da44e}
 .btn-load:disabled{opacity:.5;cursor:not-allowed}
@@ -595,7 +597,7 @@ function drawChart(id, data, endIdx, prevClose, showFull) {
 }
 
 function redrawAll() {
-  drawChart('nikkeiChart', st.nikkeiData, st.nikkeiData.length-1, st.prevCloseNikkei, true);
+  drawChart('nikkeiChart', st.nikkeiData, st.currentIdx, st.prevCloseNikkei, false);
   drawChart('stockChart',  st.stockData,  st.currentIdx, st.prevCloseStock, false);
 }
 
