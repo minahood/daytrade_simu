@@ -283,17 +283,22 @@ async function fetchYahoo(symbol, targetDate = '') {
 
   const yfUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?${query}`;
 
-  // 直接アクセスを試み、CORSエラーや結果なしなら allorigins.win 経由にフォールバック
+  // 直接 → allorigins.win → codetabs の順に試す
+  const candidates = [
+    yfUrl,
+    'https://api.allorigins.win/raw?url='    + encodeURIComponent(yfUrl),
+    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(yfUrl),
+  ];
   let json;
-  try {
-    const res = await fetch(yfUrl);
-    json = await res.json();
-    if (!json?.chart?.result) throw new Error('no result');
-  } catch (_) {
-    const proxy = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(yfUrl);
-    const res   = await fetch(proxy);
-    json = await res.json();
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data?.chart?.result?.[0]) { json = data; break; }
+    } catch (_) {}
   }
+  if (!json) throw new Error(`${symbol}: 全ソースからデータを取得できませんでした`);
 
   const result = json?.chart?.result?.[0];
   if (!result) {
